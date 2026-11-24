@@ -71,4 +71,27 @@ class NfcAdminUnitTest {
         assertTrue(html.contains("1234ABCD"))
         assertTrue(html.contains("<svg"))
     }
+
+    @Test
+    fun type2TlvParser_extractsNdefPayloadCleanly() {
+        val fakeNdef = byteArrayOf(0xD1.toByte(), 0x01, 0x05, 0x55, 0x04, 'a'.code.toByte(), 'b'.code.toByte(), 'c'.code.toByte(), 'd'.code.toByte())
+        // Leading NULL (0x00) + Lock Control TLV (0x01, len 3, 3 bytes) + NDEF TLV (0x03) + Terminator (0xFE)
+        val mem = byteArrayOf(
+            0x00,
+            0x01, 0x03, 0xA0.toByte(), 0x0C, 0x34,
+            0x03, fakeNdef.size.toByte(),
+        ) + fakeNdef + byteArrayOf(0xFE.toByte(), 0x00, 0x00)
+
+        val extracted = NfcTagHardwareWriter.extractNdefBytesFromType2Memory(mem)
+        assertTrue(extracted != null && extracted.contentEquals(fakeNdef))
+
+        // Empty tag memory returns null
+        assertEquals(null, NfcTagHardwareWriter.extractNdefBytesFromType2Memory(byteArrayOf(0x03, 0x00, 0xFE.toByte())))
+
+        // 3-byte extended length TLV (0x03, 0xFF, hi, lo)
+        val bigPayload = ByteArray(260) { (it % 127).toByte() }
+        val extMem = byteArrayOf(0x03, 0xFF.toByte(), 0x01, 0x04) + bigPayload + byteArrayOf(0xFE.toByte())
+        val extractedBig = NfcTagHardwareWriter.extractNdefBytesFromType2Memory(extMem)
+        assertTrue(extractedBig != null && extractedBig.contentEquals(bigPayload))
+    }
 }

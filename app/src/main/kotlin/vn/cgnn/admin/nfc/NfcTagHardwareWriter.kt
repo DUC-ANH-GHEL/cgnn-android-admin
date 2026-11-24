@@ -6,12 +6,14 @@ import android.nfc.NdefRecord
 import android.nfc.Tag
 import android.nfc.TagLostException
 import android.nfc.tech.IsoDep
+import android.nfc.tech.MifareUltralight
 import android.nfc.tech.Ndef
 import android.nfc.tech.NdefFormatable
 import android.nfc.tech.NfcA
 import android.nfc.tech.NfcB
 import android.nfc.tech.NfcF
 import android.nfc.tech.NfcV
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.URI
 
@@ -93,6 +95,147 @@ object NfcTagHardwareWriter {
     }
 
     /**
+     * Parses raw NFC Forum Type 2 Tag user memory (starting at page 4) and extracts the
+     * NDEF Message TLV (0x03) payload bytes. Returns null if not found or incomplete.
+     */
+    fun extractNdefBytesFromType2Memory(memory: ByteArray): ByteArray? {
+        var i = 0
+        while (i < memory.size) {
+            val tagByte = memory[i].toInt() and 0xFF
+            when (tagByte) {
+                0x00 -> {
+                    // NULL TLV (1 byte)
+                    i += 1
+                }
+                0xFE -> {
+                    // Terminator TLV
+                    return null
+                }
+                else -> {
+                    if (i + 1 >= memory.size) return null
+                    val lenByte = memory[i + 1].toInt() and 0xFF
+                    val length: Int
+                    val valueStart: Int
+                    if (lenByte == 0xFF) {
+                        if (i + 3 >= memory.size) return null
+                        val hi = memory[i + 2].toInt() and 0xFF
+                        val lo = memory[i + 3].toInt() and 0xFF
+                        length = (hi shl 8) or lo
+                        valueStart = i + 4
+                    } else {
+                        length = lenByte
+                        valueStart = i + 2
+                    }
+                    if (tagByte == 0x03) {
+                        if (length <= 0 || valueStart + length > memory.size) return null
+                        return memory.copyOfRange(valueStart, valueStart + length)
+                    }
+                    i = valueStart + length
+                }
+            }
+        }
+        return null
+    }
+
+    private fun isType2Tag(tag: Tag): Boolean {
+        if (IsoDep.get(tag) != null) return false
+        return MifareUltralight.get(tag) != null || NfcA.get(tag) != null
+    }
+
+    /**
+     * Performs a LIVE hardware EEPROM read on Type 2 tags (NTAG213/215/216, Ultralight) via
+     * raw NfcA READ (0x30) commands starting at page 4, completely bypassing Android's
+     * Ndef service cache / stale sCurrentNdefSize bug after writeNdefMessage().
+     */
+    private fun readNdefViaRawType2(
+        tag: Tag,
+        minBytesNeeded: Int,
+        logs: MutableList<String>,
+    ): NdefMessage? {
+        val nfcA = NfcA.get(tag) ?: return null
+        try {
+            nfcA.connect()
+            nfcA.timeout = 1200
+            val out = ByteArrayOutputStream()
+            // Read in 4-page (16-byte) chunks starting from page 4 (user memory start).
+            // Enough to cover TLV header + expected NDEF payload + safety margin (max 32 chunks = 512 bytes).
+            val targetBytes = maxOf(minBytesNeeded + 32, 128)
+            var page = 4
+            var reads = 0
+            while (reads < 32) {
+                val resp = nfcA.transceive(byteArrayOf(0x30, page.toByte()))
+                if (resp == null || resp.size < 4) break
+                out.write(resp, 0, minOf(resp.size, 16))
+                reads += 1
+                page += 4
+
+                val current = out.toByteArray()
+                val ndefBytes = extractNdefBytesFromType2Memory(current)
+                if (ndefBytes != null) {
+                    logs.add("Đọc trực tiếp EEPROM Type-2 (${ndefBytes.size} bytes, $reads lượt READ)")
+                    return NdefMessage(ndefBytes)
+                }
+                if (current.size >= targetBytes && current.contains(0xFE.toByte())) {
+                    break
+                }
+            }
+            val finalBytes = out.toByteArray()
+            val ndefBytes = extractNdefBytesFromType2Memory(finalBytes)
+            if (ndefBytes != null) {
+                logs.add("Đọc trực tiếp EEPROM Type-2 (${ndefBytes.size} bytes)")
+                return NdefMessage(ndefBytes)
+            }
+            logs.add("EEPROM Type-2 chưa tìm thấy TLV 0x03 hợp lệ (${finalBytes.size} bytes đọc được)")
+            return null
+        } catch (e: Exception) {
+            logs.add("Đọc raw Type-2 lỗi (${e.javaClass.simpleName}: ${e.message})")
+            return null
+        } finally {
+            runCatching { nfcA.close() }
+        }
+    }
+
+    /**
+     * Reads back the NDEF message directly from the physical chip after writing.
+     * Prioritizes raw NfcA Type-2 EEPROM read to avoid Android's stale Ndef readback cache,
+     * falling back to standard Ndef.ndefMessage for Type 4/5/3 tags.
+     */
+    private fun verifyOnChip(
+        tag: Tag,
+        expectedUrl: String,
+        expectedPayloadSize: Int,
+        logs: MutableList<String>,
+    ): Pair<Boolean, List<String>> {
+        // 1. Live raw EEPROM read for Type 2 tags (NTAG213/215/216/Ultralight)
+        if (isType2Tag(tag)) {
+            val rawMsg = readNdefViaRawType2(tag, expectedPayloadSize, logs)
+            if (rawMsg != null) {
+                val urls = extractNormalizedUrls(rawMsg)
+                logs.add("URL đọc từ EEPROM Type-2: ${urls.joinToString()}")
+                if (urls.contains(expectedUrl) && urls.all { it == expectedUrl }) {
+                    return true to urls
+                }
+                return false to urls
+            }
+        }
+
+        // 2. Fallback: standard Ndef readback (Type 4 / Type 5 / Type 3 or if raw read failed)
+        val ndef = Ndef.get(tag) ?: return false to emptyList()
+        return try {
+            ndef.connect()
+            val readBack = ndef.ndefMessage
+            val urls = extractNormalizedUrls(readBack)
+            logs.add("URL đọc qua Ndef API: ${urls.joinToString()}")
+            (urls.contains(expectedUrl) && urls.all { it == expectedUrl }) to urls
+        } catch (e: Exception) {
+            logs.add("Đọc qua Ndef API lỗi (${e.javaClass.simpleName}: ${e.message})")
+            false to emptyList()
+        } finally {
+            runCatching { ndef.close() }
+        }
+    }
+
+    /**
      * Runs on a background thread from NfcAdapter.ReaderCallback.
      * Writes the activation URL as an NDEF URI record and immediately reads back to verify.
      */
@@ -128,12 +271,12 @@ object NfcTagHardwareWriter {
 
         val ndef = Ndef.get(tag)
         if (ndef != null) {
-            return writeWithNdef(ndef, ndefMessage, payloadSize, expectedUrl, uid, logs, onStageChange)
+            return writeWithNdef(tag, ndef, ndefMessage, payloadSize, expectedUrl, uid, logs, onStageChange)
         }
 
         val formatable = NdefFormatable.get(tag)
         if (formatable != null) {
-            return writeWithNdefFormatable(tag, formatable, ndefMessage, expectedUrl, uid, logs, onStageChange)
+            return writeWithNdefFormatable(tag, formatable, ndefMessage, payloadSize, expectedUrl, uid, logs, onStageChange)
         }
 
         logs.add("Thẻ không hỗ trợ Ndef hay NdefFormatable")
@@ -148,6 +291,7 @@ object NfcTagHardwareWriter {
     }
 
     private fun writeWithNdef(
+        tag: Tag,
         ndef: Ndef,
         message: NdefMessage,
         payloadSize: Int,
@@ -182,7 +326,6 @@ object NfcTagHardwareWriter {
                 )
             }
 
-            // Up to 2 write attempts with fresh reconnect readback to avoid stale Android NDEF cache
             val maxWriteAttempts = 2
             var lastReadUrls: List<String> = emptyList()
             for (attempt in 1..maxWriteAttempts) {
@@ -190,30 +333,20 @@ object NfcTagHardwareWriter {
                 if (!ndef.isConnected) ndef.connect()
                 logs.add("Đang ghi NDEF lần $attempt ($payloadSize bytes)...")
                 ndef.writeNdefMessage(message)
-                logs.add("Ghi xong lần $attempt, đóng/mở lại kết nối để đọc kiểm tra thật từ chip...")
+                // Must close Ndef before opening NfcA for live EEPROM readback
+                runCatching { ndef.close() }
+                logs.add("Ghi xong lần $attempt, đọc kiểm tra trực tiếp từ chip...")
 
                 onStageChange("verifying")
-                // Close & reconnect forces a live RF read instead of returning pre-write cached NDEF
-                runCatching { ndef.close() }
-                runCatching { Thread.sleep(90L) }
+                runCatching { Thread.sleep(50L) }
 
-                var verified = false
-                for (readTry in 1..2) {
-                    if (!ndef.isConnected) ndef.connect()
-                    val readBack = ndef.ndefMessage
-                    lastReadUrls = extractNormalizedUrls(readBack)
-                    logs.add("Đọc kiểm tra (ghi #$attempt, đọc #$readTry): ${lastReadUrls.joinToString()}")
-                    if (lastReadUrls.contains(expectedUrl) && lastReadUrls.all { it == expectedUrl }) {
-                        verified = true
-                        break
-                    }
-                    runCatching { ndef.close() }
-                    runCatching { Thread.sleep(110L) }
-                }
-                if (verified) {
+                val (ok, urls) = verifyOnChip(tag, expectedUrl, payloadSize, logs)
+                lastReadUrls = urls
+                if (ok) {
                     return NfcWriteResult.Success(uid = uid, verifiedUrl = expectedUrl, logs = logs)
                 }
                 logs.add("Đọc kiểm tra lần $attempt chưa khớp (đọc được: ${lastReadUrls.joinToString()})")
+                runCatching { Thread.sleep(80L) }
             }
 
             logs.add("Mã đọc lại không khớp kỳ vọng sau $maxWriteAttempts lần ghi")
@@ -264,6 +397,7 @@ object NfcTagHardwareWriter {
         tag: Tag,
         formatable: NdefFormatable,
         message: NdefMessage,
+        payloadSize: Int,
         expectedUrl: String,
         uid: String,
         logs: MutableList<String>,
@@ -275,24 +409,17 @@ object NfcTagHardwareWriter {
             formatable.connect()
             formatable.format(message)
             runCatching { formatable.close() }
-            logs.add("Format + ghi thành công, kiểm tra lại...")
+            logs.add("Format + ghi thành công, kiểm tra trực tiếp trên chip...")
 
             onStageChange("verifying")
-            val ndef = Ndef.get(tag)
-            if (ndef != null) {
-                try {
-                    ndef.connect()
-                    val readUrls = extractNormalizedUrls(ndef.ndefMessage)
-                    logs.add("Đọc kiểm tra sau format: ${readUrls.joinToString()}")
-                    if (readUrls.contains(expectedUrl) && readUrls.all { it == expectedUrl }) {
-                        return NfcWriteResult.Success(uid = uid, verifiedUrl = expectedUrl, logs = logs)
-                    }
-                } finally {
-                    runCatching { ndef.close() }
-                }
+            runCatching { Thread.sleep(60L) }
+            val (ok, _) = verifyOnChip(tag, expectedUrl, payloadSize, logs)
+            if (ok) {
+                return NfcWriteResult.Success(uid = uid, verifiedUrl = expectedUrl, logs = logs)
             }
-            // Some Android chips don't expose Ndef immediately on the same Tag handle after format;
+            // Some Android chips don't expose NDEF on the same Tag handle right after format();
             // format() succeeding without throwing means the chip acknowledged the write.
+            logs.add("Format không báo lỗi; chấp nhận kết quả trên dòng chip không cho đọc lại cùng phiên.")
             return NfcWriteResult.Success(uid = uid, verifiedUrl = expectedUrl, logs = logs)
         } catch (e: TagLostException) {
             logs.add("TagLostException khi format: ${e.message}")
@@ -320,32 +447,55 @@ object NfcTagHardwareWriter {
     }
 
     /**
-     * Blocks on IO thread until the physical NFC tag is lifted away from the RF field
-     * (or until the calling thread is interrupted / maxWaitMs elapses).
+     * Actively probes the RF link until the physical NFC tag is lifted away from the phone.
+     * Note: BasicTagTechnology.isConnected() in Android only checks a local Java boolean and
+     * does NOT send an RF ping — we must perform an actual RF transceive or reconnect probe!
      */
     fun waitUntilTagRemoved(tag: Tag, maxWaitMs: Long = 30_000L): Boolean {
-        val tech = Ndef.get(tag)
-            ?: NfcA.get(tag)
-            ?: IsoDep.get(tag)
+        val deadline = System.currentTimeMillis() + maxWaitMs
+
+        // For Type 2 tags (NTAG/Ultralight): read page 0 (UID, 100% read-only) via NfcA
+        if (isType2Tag(tag)) {
+            val nfcA = NfcA.get(tag)
+            if (nfcA != null) {
+                try {
+                    nfcA.connect()
+                    nfcA.timeout = 350
+                    while (System.currentTimeMillis() < deadline && !Thread.currentThread().isInterrupted) {
+                        val resp = nfcA.transceive(byteArrayOf(0x30, 0x00))
+                        if (resp == null || resp.isEmpty()) return true
+                        Thread.sleep(160L)
+                    }
+                    return false
+                } catch (_: InterruptedException) {
+                    return false
+                } catch (_: Exception) {
+                    // TagLostException / IOException means the tag physically left the RF field!
+                    return true
+                } finally {
+                    runCatching { nfcA.close() }
+                }
+            }
+        }
+
+        // Fallback for non-Type-2 tags: active close + reconnect probe
+        val tech = IsoDep.get(tag)
+            ?: Ndef.get(tag)
             ?: NfcV.get(tag)
             ?: NfcF.get(tag)
             ?: NfcB.get(tag)
             ?: return true
 
-        val deadline = System.currentTimeMillis() + maxWaitMs
         try {
-            if (!tech.isConnected) {
-                tech.connect()
-            }
             while (System.currentTimeMillis() < deadline && !Thread.currentThread().isInterrupted) {
-                if (!tech.isConnected) return true
-                Thread.sleep(160L)
+                runCatching { tech.close() }
+                tech.connect() // Throws IOException/TagLostException immediately once tag is removed
+                Thread.sleep(180L)
             }
-            return !tech.isConnected
+            return false
         } catch (_: InterruptedException) {
             return false
         } catch (_: Exception) {
-            // TagLostException / IOException / SecurityException means tag left the RF field
             return true
         } finally {
             runCatching { tech.close() }
