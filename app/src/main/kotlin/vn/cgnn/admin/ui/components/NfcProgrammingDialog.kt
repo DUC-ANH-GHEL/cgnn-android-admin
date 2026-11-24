@@ -38,6 +38,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -174,8 +175,18 @@ fun NfcProgrammingDialog(
         }
     }
 
-    // Native Android NFC ReaderMode while waiting/error/success
-    DisposableEffect(activity, nfcAdapter, isNfcEnabled, preparedUrl, phase, currentIndex) {
+    // Keep latest state accessible to ReaderCallback without restarting enableReaderMode!
+    // Restarting enableReaderMode when `phase` changes to WRITING would call disableReaderMode()
+    // mid-write and immediately cause TagLostException.
+    val latestPhase by rememberUpdatedState(phase)
+    val latestPreparedUrl by rememberUpdatedState(preparedUrl)
+    val latestCurrentTag by rememberUpdatedState(currentTag)
+    val latestLastProgrammedUid by rememberUpdatedState(lastProgrammedUid)
+    val latestOnTagVerified by rememberUpdatedState(onTagVerified)
+    val latestOnSendLog by rememberUpdatedState(onSendLog)
+
+    // Native Android NFC ReaderMode stays continuously active while dialog is open & NFC is on
+    DisposableEffect(activity, nfcAdapter, isNfcEnabled) {
         val canListen = activity != null && nfcAdapter != null && isNfcEnabled
         if (canListen) {
             val flags = NfcAdapter.FLAG_READER_NFC_A or
@@ -184,13 +195,14 @@ fun NfcProgrammingDialog(
                 NfcAdapter.FLAG_READER_NFC_V or
                 NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS
             val extras = Bundle().apply {
-                putInt(NfcAdapter.EXTRA_READER_PRESENCE_CHECK_DELAY, 250)
+                // Keep presence check interval comfortably longer than NDEF format/write + verify
+                putInt(NfcAdapter.EXTRA_READER_PRESENCE_CHECK_DELAY, 2500)
             }
             val callback = NfcAdapter.ReaderCallback { nfcTag ->
                 if (isHandlingTag) return@ReaderCallback
-                val activePhase = phase
-                val url = preparedUrl
-                val tagItem = currentTag ?: return@ReaderCallback
+                val activePhase = latestPhase
+                val url = latestPreparedUrl
+                val tagItem = latestCurrentTag ?: return@ReaderCallback
 
                 if (activePhase != ProgramPhase.WAITING && activePhase != ProgramPhase.ERROR) {
                     return@ReaderCallback
@@ -198,13 +210,14 @@ fun NfcProgrammingDialog(
                 if (url.isEmpty()) return@ReaderCallback
 
                 isHandlingTag = true
+                val ignoreUidSnapshot = latestLastProgrammedUid
                 scope.launch {
                     try {
                         val result = withContext(Dispatchers.IO) {
                             NfcTagHardwareWriter.writeAndVerify(
                                 tag = nfcTag,
                                 expectedUrlRaw = url,
-                                ignoreUid = lastProgrammedUid,
+                                ignoreUid = ignoreUidSnapshot,
                                 onStageChange = { stage ->
                                     scope.launch(Dispatchers.Main) {
                                         if (stage == "writing") phase = ProgramPhase.WRITING
@@ -225,8 +238,8 @@ fun NfcProgrammingDialog(
                                 hintMessage = ""
                                 phase = ProgramPhase.SUCCESS
                                 AdminUtils.vibrateFeedback(context, success = true)
-                                onTagVerified(tagItem)
-                                onSendLog(tagItem.id, "success", result.logs)
+                                latestOnTagVerified(tagItem)
+                                latestOnSendLog(tagItem.id, "success", result.logs)
                             }
 
                             is NfcWriteResult.Error -> {
@@ -237,7 +250,7 @@ fun NfcProgrammingDialog(
                                 errorStep = if (result.stage == "verify") 3 else 2
                                 phase = ProgramPhase.ERROR
                                 AdminUtils.vibrateFeedback(context, success = false)
-                                onSendLog(tagItem.id, "error", result.logs + "Mã lỗi: ${result.code}")
+                                latestOnSendLog(tagItem.id, "error", result.logs + "Mã lỗi: ${result.code}")
                             }
                         }
                     } finally {

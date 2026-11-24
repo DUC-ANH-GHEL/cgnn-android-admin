@@ -182,6 +182,8 @@ object NfcTagHardwareWriter {
             logs.add("Ghi xong, bắt đầu đọc kiểm tra...")
 
             onStageChange("verifying")
+            // Give EEPROM a brief moment to settle before live RF readback
+            runCatching { Thread.sleep(60L) }
             val readBack = ndef.ndefMessage
             val readUrls = extractNormalizedUrls(readBack)
             logs.add("Đọc kiểm tra trực tiếp: ${readUrls.joinToString()}")
