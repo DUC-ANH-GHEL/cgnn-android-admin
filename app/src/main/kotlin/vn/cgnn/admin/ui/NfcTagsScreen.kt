@@ -19,14 +19,15 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
@@ -38,39 +39,56 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import vn.cgnn.admin.data.model.AdminNfcTag
 import vn.cgnn.admin.data.model.AppFeatures
 import vn.cgnn.admin.data.model.NfcGuideContent
 import vn.cgnn.admin.data.model.PancakeOrderStatuses
 import vn.cgnn.admin.data.model.TagStatusLabels
 import vn.cgnn.admin.ui.components.ButtonSettingsSheet
+import vn.cgnn.admin.ui.components.CloseVectorIcon
+import vn.cgnn.admin.ui.components.CopyVectorIcon
 import vn.cgnn.admin.ui.components.CreateBatchSheet
 import vn.cgnn.admin.ui.components.DisableTagConfirmSheet
 import vn.cgnn.admin.ui.components.FeaturesEditorSheet
+import vn.cgnn.admin.ui.components.LinkVectorIcon
 import vn.cgnn.admin.ui.components.LoginScreen
+import vn.cgnn.admin.ui.components.MessageVectorIcon
 import vn.cgnn.admin.ui.components.NfcGuideEditorSheet
 import vn.cgnn.admin.ui.components.NfcMachineProfileSheet
 import vn.cgnn.admin.ui.components.NfcProgrammingDialog
 import vn.cgnn.admin.ui.components.NfcTagDetailSheet
+import vn.cgnn.admin.ui.components.NfcWaveVectorIcon
 import vn.cgnn.admin.ui.components.OrderFilterSheet
+import vn.cgnn.admin.ui.components.SearchVectorIcon
 import vn.cgnn.admin.ui.components.SeparateAccountConfirmSheet
 import vn.cgnn.admin.ui.components.SingleInputActionSheet
 import vn.cgnn.admin.ui.components.StatusFilterSheet
@@ -183,6 +201,14 @@ private fun NfcTagsMainScreen(
     var buttonSettingsOpen by remember { mutableStateOf(false) }
     var guideEditorOpen by remember { mutableStateOf(false) }
     var moreSelectionActionsOpen by remember { mutableStateOf(false) }
+    var searchFocused by remember { mutableStateOf(false) }
+
+    val listState = rememberLazyListState()
+    val searchFocusRequester = remember { FocusRequester() }
+    val coroutineScope = rememberCoroutineScope()
+    val showScrollToSearch by remember {
+        derivedStateOf { listState.firstVisibleItemIndex > 2 }
+    }
 
     var featureDialogTagIds by remember { mutableStateOf<List<Long>>(emptyList()) }
     var featureDialogInitial by remember { mutableStateOf<List<String>>(AppFeatures.ALL_KEYS) }
@@ -220,7 +246,7 @@ private fun NfcTagsMainScreen(
             }
         },
         bottomBar = {
-            if (state.selectedTagIds.isNotEmpty()) {
+            if (state.selectedTagIds.isNotEmpty() && !searchFocused) {
                 SelectionActionBar(
                     selectedCount = state.selectedTagIds.size,
                     programmableCount = selectedProgrammable.size,
@@ -266,32 +292,21 @@ private fun NfcTagsMainScreen(
                 modifier = Modifier.fillMaxSize(),
             ) {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier
                         .fillMaxSize()
                         .statusBarsPadding(),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    // Header row
+                    // Header row (matching web h1)
                     item(key = "header") {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = "Thẻ kích hoạt máy",
-                                fontSize = 24.sp,
-                                fontWeight = FontWeight.Black,
-                                color = NfcColors.TextPrimary,
-                            )
-                            TextButton(
-                                onClick = { viewModel.loadTags(background = false) },
-                                enabled = !state.loading,
-                            ) {
-                                Text("Tải lại", fontWeight = FontWeight.ExtraBold, color = NfcColors.TextMuted)
-                            }
-                        }
+                        Text(
+                            text = "Thẻ kích hoạt máy",
+                            fontSize = 25.sp,
+                            fontWeight = FontWeight.Black,
+                            color = NfcColors.TextPrimary,
+                        )
                     }
 
                     // Primary actions: Tạo thẻ mới + Thêm việc
@@ -303,14 +318,14 @@ private fun NfcTagsMainScreen(
                             SilverPrimaryButton(
                                 onClick = { createBatchOpen = true },
                                 enabled = !state.busy && !state.bulkPancakeSyncing,
-                                minHeightDp = 54,
-                                modifier = Modifier.weight(1.75f),
+                                minHeightDp = 56,
+                                modifier = Modifier.weight(1.8f),
                             ) {
                                 Text("+ Tạo thẻ mới", fontSize = 16.5.sp, fontWeight = FontWeight.Black, color = NfcColors.SilverBtnText)
                             }
                             LineActionButton(
                                 onClick = { toolsOpen = true },
-                                minHeightDp = 54,
+                                minHeightDp = 56,
                                 modifier = Modifier.weight(1f),
                             ) {
                                 Text("Thêm việc", fontSize = 15.5.sp, fontWeight = FontWeight.ExtraBold)
@@ -318,30 +333,69 @@ private fun NfcTagsMainScreen(
                         }
                     }
 
-                    // Search box + scope toggle
+                    // Search box + circular ClearSearchButton + scope toggle (exact web match)
                     item(key = "search") {
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            OutlinedTextField(
-                                value = state.search,
-                                onValueChange = viewModel::updateSearch,
-                                placeholder = { Text("Tìm tên khách, số điện thoại", color = Color(0xFF8A99AB)) },
-                                singleLine = true,
-                                trailingIcon = {
-                                    if (state.search.isNotEmpty()) {
-                                        TextButton(onClick = { viewModel.updateSearch("") }) {
-                                            Text("Xóa", fontWeight = FontWeight.Bold, color = NfcColors.TextMuted)
-                                        }
+                            val searchShape = RoundedCornerShape(18.dp)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(54.dp)
+                                    .shadow(4.dp, searchShape, ambientColor = Color(0x22334155), spotColor = Color(0x22334155))
+                                    .clip(searchShape)
+                                    .background(Color.White.copy(alpha = 0.96f))
+                                    .border(
+                                        width = 1.5.dp,
+                                        color = if (searchFocused) Color(0xFFCBD5E1) else Color.White,
+                                        shape = searchShape,
+                                    )
+                                    .padding(start = 15.dp, end = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                SearchVectorIcon(color = Color(0xFF7B93AB), size = 21.dp)
+                                Box(
+                                    modifier = Modifier.weight(1f),
+                                    contentAlignment = Alignment.CenterStart,
+                                ) {
+                                    if (state.search.isEmpty()) {
+                                        Text(
+                                            text = "Tìm tên khách, số điện thoại",
+                                            fontSize = 16.5.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = Color(0xFF8A99AB),
+                                        )
                                     }
-                                },
-                                shape = RoundedCornerShape(18.dp),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedContainerColor = Color.White,
-                                    unfocusedContainerColor = Color.White,
-                                    focusedBorderColor = Color(0xFFCBD5E1),
-                                    unfocusedBorderColor = Color.White,
-                                ),
-                                modifier = Modifier.fillMaxWidth(),
-                            )
+                                    BasicTextField(
+                                        value = state.search,
+                                        onValueChange = viewModel::updateSearch,
+                                        singleLine = true,
+                                        textStyle = TextStyle(
+                                            fontSize = 17.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = NfcColors.TextPrimary,
+                                        ),
+                                        cursorBrush = SolidColor(NfcColors.TextPrimary),
+                                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .focusRequester(searchFocusRequester)
+                                            .onFocusChanged { searchFocused = it.isFocused },
+                                    )
+                                }
+                                if (state.search.isNotEmpty()) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(CircleShape)
+                                            .background(Color.Black.copy(alpha = 0.08f))
+                                            .clickable { viewModel.updateSearch("") },
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        CloseVectorIcon(color = Color(0xFF334155), size = 18.dp)
+                                    }
+                                }
+                            }
                             if (state.searchActive && (state.status.isNotEmpty() || state.orderStatus.isNotEmpty() || state.attnOnly)) {
                                 Row(
                                     modifier = Modifier
@@ -522,8 +576,41 @@ private fun NfcTagsMainScreen(
                     }
 
                     item(key = "bottom-spacer") {
-                        Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.height(72.dp))
                     }
+                }
+            }
+
+            // Floating "Tìm và lọc" button when scrolled past search box (exact ScrollToSearchButton parity)
+            if (showScrollToSearch && !searchFocused) {
+                val pillShape = RoundedCornerShape(50)
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 12.dp, bottom = 14.dp)
+                        .navigationBarsPadding()
+                        .shadow(10.dp, pillShape, ambientColor = Color(0x5500143C), spotColor = Color(0x5500143C))
+                        .clip(pillShape)
+                        .background(Color.White)
+                        .border(1.dp, Color.Black.copy(alpha = 0.08f), pillShape)
+                        .clickable {
+                            coroutineScope.launch {
+                                listState.animateScrollToItem(2)
+                                delay(220L)
+                                runCatching { searchFocusRequester.requestFocus() }
+                            }
+                        }
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    SearchVectorIcon(color = NfcColors.TextDeep, size = 19.dp)
+                    Text(
+                        text = "Tìm và lọc",
+                        fontSize = 15.5.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = NfcColors.TextDeep,
+                    )
                 }
             }
         }
@@ -838,6 +925,7 @@ private fun NfcTagCardItem(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .shadow(4.dp, shape, ambientColor = Color(0x22334155), spotColor = Color(0x22334155))
             .clip(shape)
             .background(if (selected) NfcColors.SelectedBg else Color.White)
             .border(
@@ -953,7 +1041,9 @@ private fun NfcTagCardItem(
                         contentColor = NfcColors.BlueText,
                         modifier = Modifier.weight(1f),
                     ) {
-                        Text(if (copying) "Đang chép" else "Chép mã", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold)
+                        CopyVectorIcon(color = NfcColors.BlueText, size = 14.dp)
+                        Spacer(Modifier.width(4.dp))
+                        Text(if (copying) "Đang chép" else "Chép mã", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
                     }
                 }
                 QuickCopyPill(
@@ -964,7 +1054,9 @@ private fun NfcTagCardItem(
                     contentColor = NfcColors.EmeraldText,
                     modifier = Modifier.weight(1f),
                 ) {
-                    Text(if (copying) "Đang chép" else "Chép link", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold)
+                    LinkVectorIcon(color = NfcColors.EmeraldText, size = 14.dp)
+                    Spacer(Modifier.width(4.dp))
+                    Text(if (copying) "Đang chép" else "Chép link", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
                 }
                 if (tag.orderId != null) {
                     QuickCopyPill(
@@ -975,7 +1067,9 @@ private fun NfcTagCardItem(
                         contentColor = NfcColors.AmberText,
                         modifier = Modifier.weight(1f),
                     ) {
-                        Text(if (pancakeCopying) "Đang chép" else "Tin nhắn", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold)
+                        MessageVectorIcon(color = NfcColors.AmberText, size = 14.dp)
+                        Spacer(Modifier.width(4.dp))
+                        Text(if (pancakeCopying) "Đang chép" else "Tin nhắn", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
                     }
                 }
             }
@@ -986,9 +1080,10 @@ private fun NfcTagCardItem(
                 SilverPrimaryButton(
                     onClick = onProgram,
                     enabled = !busy,
-                    minHeightDp = 50,
+                    minHeightDp = 52,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
+                    NfcWaveVectorIcon(color = NfcColors.SilverBtnText, size = 21.dp)
                     Text("Nạp vào thẻ", fontSize = 16.sp, fontWeight = FontWeight.Black, color = NfcColors.SilverBtnText)
                 }
             } else {
@@ -1076,13 +1171,16 @@ private fun SelectionActionBar(
                 color = NfcColors.GoldText,
                 modifier = Modifier.weight(1f),
             )
-            Box(
+            Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(12.dp))
                     .background(NfcColors.DarkBarEnd)
                     .clickable(onClick = onClearSelection)
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(horizontal = 10.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
             ) {
+                CloseVectorIcon(color = Color.White, size = 15.dp)
                 Text("Bỏ chọn hết", fontSize = 13.5.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
             }
         }
@@ -1096,9 +1194,10 @@ private fun SelectionActionBar(
                 SilverPrimaryButton(
                     onClick = onProgramSelected,
                     enabled = programmableCount > 0,
-                    minHeightDp = 50,
+                    minHeightDp = 52,
                     modifier = Modifier.weight(1f),
                 ) {
+                    NfcWaveVectorIcon(color = NfcColors.SilverBtnText, size = 21.dp)
                     Text(
                         text = "Nạp $programmableCount thẻ",
                         fontSize = 16.sp,
