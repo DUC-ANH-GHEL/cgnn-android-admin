@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
@@ -52,10 +53,19 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -202,12 +212,30 @@ private fun NfcTagsMainScreen(
     var guideEditorOpen by remember { mutableStateOf(false) }
     var moreSelectionActionsOpen by remember { mutableStateOf(false) }
     var searchFocused by remember { mutableStateOf(false) }
+    var searchBoundsInWindow by remember { mutableStateOf<Rect?>(null) }
+    var rootOriginInWindow by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val dismissSearchFocus = remember(focusManager, keyboardController) {
+        {
+            focusManager.clearFocus(force = true)
+            keyboardController?.hide()
+        }
+    }
 
     val listState = rememberLazyListState()
     val searchFocusRequester = remember { FocusRequester() }
     val coroutineScope = rememberCoroutineScope()
     val showScrollToSearch by remember {
         derivedStateOf { listState.firstVisibleItemIndex > 2 }
+    }
+
+    // Automatically dismiss focus & hide keyboard when scrolling or when search bar leaves viewport
+    LaunchedEffect(listState.isScrollInProgress, showScrollToSearch) {
+        if (searchFocused && (listState.isScrollInProgress || showScrollToSearch)) {
+            dismissSearchFocus()
+        }
     }
 
     var featureDialogTagIds by remember { mutableStateOf<List<Long>>(emptyList()) }
@@ -284,7 +312,27 @@ private fun NfcTagsMainScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .background(NfcColors.PearlBackgroundBrush)
-                .padding(innerPadding),
+                .padding(innerPadding)
+                .onGloballyPositioned { coords ->
+                    rootOriginInWindow = coords.positionInWindow()
+                }
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            if (event.type == PointerEventType.Press && searchFocused) {
+                                val touchLocal = event.changes.firstOrNull()?.position
+                                val bounds = searchBoundsInWindow
+                                if (touchLocal != null && bounds != null) {
+                                    val touchInWindow = rootOriginInWindow + touchLocal
+                                    if (!bounds.contains(touchInWindow)) {
+                                        dismissSearchFocus()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
         ) {
             PullToRefreshBox(
                 isRefreshing = state.loading,
@@ -341,6 +389,9 @@ private fun NfcTagsMainScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(54.dp)
+                                    .onGloballyPositioned { coords ->
+                                        searchBoundsInWindow = coords.boundsInWindow()
+                                    }
                                     .shadow(4.dp, searchShape, ambientColor = Color(0x22334155), spotColor = Color(0x22334155))
                                     .clip(searchShape)
                                     .background(Color.White.copy(alpha = 0.96f))
@@ -377,6 +428,10 @@ private fun NfcTagsMainScreen(
                                         ),
                                         cursorBrush = SolidColor(NfcColors.TextPrimary),
                                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                        keyboardActions = KeyboardActions(
+                                            onSearch = { dismissSearchFocus() },
+                                            onDone = { dismissSearchFocus() },
+                                        ),
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .focusRequester(searchFocusRequester)
