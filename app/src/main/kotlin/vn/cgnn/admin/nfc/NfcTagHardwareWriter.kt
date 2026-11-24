@@ -5,8 +5,13 @@ import android.nfc.NdefMessage
 import android.nfc.NdefRecord
 import android.nfc.Tag
 import android.nfc.TagLostException
+import android.nfc.tech.IsoDep
 import android.nfc.tech.Ndef
 import android.nfc.tech.NdefFormatable
+import android.nfc.tech.NfcA
+import android.nfc.tech.NfcB
+import android.nfc.tech.NfcF
+import android.nfc.tech.NfcV
 import java.io.IOException
 import java.net.URI
 
@@ -177,22 +182,41 @@ object NfcTagHardwareWriter {
                 )
             }
 
-            logs.add("Đang ghi NDEF ($payloadSize bytes)...")
-            ndef.writeNdefMessage(message)
-            logs.add("Ghi xong, bắt đầu đọc kiểm tra...")
+            // Up to 2 write attempts with fresh reconnect readback to avoid stale Android NDEF cache
+            val maxWriteAttempts = 2
+            var lastReadUrls: List<String> = emptyList()
+            for (attempt in 1..maxWriteAttempts) {
+                onStageChange("writing")
+                if (!ndef.isConnected) ndef.connect()
+                logs.add("Đang ghi NDEF lần $attempt ($payloadSize bytes)...")
+                ndef.writeNdefMessage(message)
+                logs.add("Ghi xong lần $attempt, đóng/mở lại kết nối để đọc kiểm tra thật từ chip...")
 
-            onStageChange("verifying")
-            // Give EEPROM a brief moment to settle before live RF readback
-            runCatching { Thread.sleep(60L) }
-            val readBack = ndef.ndefMessage
-            val readUrls = extractNormalizedUrls(readBack)
-            logs.add("Đọc kiểm tra trực tiếp: ${readUrls.joinToString()}")
+                onStageChange("verifying")
+                // Close & reconnect forces a live RF read instead of returning pre-write cached NDEF
+                runCatching { ndef.close() }
+                runCatching { Thread.sleep(90L) }
 
-            if (readUrls.contains(expectedUrl) && readUrls.all { it == expectedUrl }) {
-                return NfcWriteResult.Success(uid = uid, verifiedUrl = expectedUrl, logs = logs)
+                var verified = false
+                for (readTry in 1..2) {
+                    if (!ndef.isConnected) ndef.connect()
+                    val readBack = ndef.ndefMessage
+                    lastReadUrls = extractNormalizedUrls(readBack)
+                    logs.add("Đọc kiểm tra (ghi #$attempt, đọc #$readTry): ${lastReadUrls.joinToString()}")
+                    if (lastReadUrls.contains(expectedUrl) && lastReadUrls.all { it == expectedUrl }) {
+                        verified = true
+                        break
+                    }
+                    runCatching { ndef.close() }
+                    runCatching { Thread.sleep(110L) }
+                }
+                if (verified) {
+                    return NfcWriteResult.Success(uid = uid, verifiedUrl = expectedUrl, logs = logs)
+                }
+                logs.add("Đọc kiểm tra lần $attempt chưa khớp (đọc được: ${lastReadUrls.joinToString()})")
             }
 
-            logs.add("Mã đọc lại không khớp kỳ vọng")
+            logs.add("Mã đọc lại không khớp kỳ vọng sau $maxWriteAttempts lần ghi")
             return NfcWriteResult.Error(
                 title = "Thẻ chưa lưu đúng mã cần nạp",
                 message = "Đã ghi nhưng khi đọc kiểm tra lại thì dữ liệu trên thẻ chưa khớp.",
@@ -292,6 +316,39 @@ object NfcTagHardwareWriter {
             )
         } finally {
             runCatching { formatable.close() }
+        }
+    }
+
+    /**
+     * Blocks on IO thread until the physical NFC tag is lifted away from the RF field
+     * (or until the calling thread is interrupted / maxWaitMs elapses).
+     */
+    fun waitUntilTagRemoved(tag: Tag, maxWaitMs: Long = 30_000L): Boolean {
+        val tech = Ndef.get(tag)
+            ?: NfcA.get(tag)
+            ?: IsoDep.get(tag)
+            ?: NfcV.get(tag)
+            ?: NfcF.get(tag)
+            ?: NfcB.get(tag)
+            ?: return true
+
+        val deadline = System.currentTimeMillis() + maxWaitMs
+        try {
+            if (!tech.isConnected) {
+                tech.connect()
+            }
+            while (System.currentTimeMillis() < deadline && !Thread.currentThread().isInterrupted) {
+                if (!tech.isConnected) return true
+                Thread.sleep(160L)
+            }
+            return !tech.isConnected
+        } catch (_: InterruptedException) {
+            return false
+        } catch (_: Exception) {
+            // TagLostException / IOException / SecurityException means tag left the RF field
+            return true
+        } finally {
+            runCatching { tech.close() }
         }
     }
 }

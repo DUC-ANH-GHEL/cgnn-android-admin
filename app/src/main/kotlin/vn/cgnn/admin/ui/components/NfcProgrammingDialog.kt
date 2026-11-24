@@ -56,6 +56,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import vn.cgnn.admin.data.model.AdminNfcTag
@@ -123,42 +125,44 @@ fun NfcProgrammingDialog(
     // Load activation URL for currentTag (and prefetch next tag in queue)
     LaunchedEffect(currentIndex, queue) {
         val tag = queue.getOrNull(currentIndex) ?: return@LaunchedEffect
-        phase = ProgramPhase.PREPARING
-        preparedUrl = ""
-        hintMessage = ""
-        errorTitle = ""
-        errorMessage = ""
-        errorAction = ""
-        errorCode = ""
-        verifiedUid = ""
+        if (!isHandlingTag) {
+            phase = ProgramPhase.PREPARING
+            preparedUrl = ""
+            hintMessage = ""
+            errorTitle = ""
+            errorMessage = ""
+            errorAction = ""
+            errorCode = ""
+            verifiedUid = ""
 
-        val cached = urlCache[tag.id]
-        if (cached != null) {
-            preparedUrl = cached
-            phase = ProgramPhase.WAITING
-        } else {
-            try {
-                val detail = api.getNfcTagDetail(tag.id)
-                val normalized = NfcTagHardwareWriter.normalizeCgnnActivationUrl(detail?.url)
-                if (normalized.isEmpty()) {
-                    errorTitle = "Mã kích hoạt không hợp lệ"
-                    errorMessage = "Mã kích hoạt của thẻ không hợp lệ hoặc đã bị thiếu."
-                    errorAction = "Bác kiểm tra lại thẻ này trên hệ thống."
-                    errorCode = "NFC-URL-THIEU"
+            val cached = urlCache[tag.id]
+            if (cached != null) {
+                preparedUrl = cached
+                phase = ProgramPhase.WAITING
+            } else {
+                try {
+                    val detail = api.getNfcTagDetail(tag.id)
+                    val normalized = NfcTagHardwareWriter.normalizeCgnnActivationUrl(detail?.url)
+                    if (normalized.isEmpty()) {
+                        errorTitle = "Mã kích hoạt không hợp lệ"
+                        errorMessage = "Mã kích hoạt của thẻ không hợp lệ hoặc đã bị thiếu."
+                        errorAction = "Bác kiểm tra lại thẻ này trên hệ thống."
+                        errorCode = "NFC-URL-THIEU"
+                        errorStep = 1
+                        phase = ProgramPhase.ERROR
+                    } else {
+                        urlCache[tag.id] = normalized
+                        preparedUrl = normalized
+                        phase = ProgramPhase.WAITING
+                    }
+                } catch (e: Exception) {
+                    errorTitle = "Chưa tải được mã kích hoạt"
+                    errorMessage = e.message ?: "CGNN chưa tải được mã kích hoạt của thẻ này từ hệ thống."
+                    errorAction = "Bác kiểm tra mạng rồi bấm Thử lại."
+                    errorCode = "NFC-TAI-MA"
                     errorStep = 1
                     phase = ProgramPhase.ERROR
-                } else {
-                    urlCache[tag.id] = normalized
-                    preparedUrl = normalized
-                    phase = ProgramPhase.WAITING
                 }
-            } catch (e: Exception) {
-                errorTitle = "Chưa tải được mã kích hoạt"
-                errorMessage = e.message ?: "CGNN chưa tải được mã kích hoạt của thẻ này từ hệ thống."
-                errorAction = "Bác kiểm tra mạng rồi bấm Thử lại."
-                errorCode = "NFC-TAI-MA"
-                errorStep = 1
-                phase = ProgramPhase.ERROR
             }
         }
 
@@ -181,9 +185,13 @@ fun NfcProgrammingDialog(
     val latestPhase by rememberUpdatedState(phase)
     val latestPreparedUrl by rememberUpdatedState(preparedUrl)
     val latestCurrentTag by rememberUpdatedState(currentTag)
+    val latestCurrentIndex by rememberUpdatedState(currentIndex)
     val latestLastProgrammedUid by rememberUpdatedState(lastProgrammedUid)
     val latestOnTagVerified by rememberUpdatedState(onTagVerified)
     val latestOnSendLog by rememberUpdatedState(onSendLog)
+    val latestOnClose by rememberUpdatedState(onClose)
+
+    var removalWatchJob by remember { mutableStateOf<Job?>(null) }
 
     // Native Android NFC ReaderMode stays continuously active while dialog is open & NFC is on
     DisposableEffect(activity, nfcAdapter, isNfcEnabled) {
@@ -201,23 +209,54 @@ fun NfcProgrammingDialog(
             val callback = NfcAdapter.ReaderCallback { nfcTag ->
                 if (isHandlingTag) return@ReaderCallback
                 val activePhase = latestPhase
-                val url = latestPreparedUrl
-                val tagItem = latestCurrentTag ?: return@ReaderCallback
+                val activeIdx = latestCurrentIndex
+                val prevUid = latestLastProgrammedUid
 
-                if (activePhase != ProgramPhase.WAITING && activePhase != ProgramPhase.ERROR) {
+                // Fast handoff: if user already swapped to a NEW physical tag while still on SUCCESS screen,
+                // immediately advance to the next tag and write it in this very tap!
+                var targetIdx = activeIdx
+                var tagItem = latestCurrentTag ?: return@ReaderCallback
+                var url = latestPreparedUrl
+
+                if (activePhase == ProgramPhase.SUCCESS) {
+                    val tappedUid = NfcTagHardwareWriter.extractUid(nfcTag)
+                    if (prevUid.isNotBlank() && tappedUid.equals(prevUid, ignoreCase = true)) {
+                        return@ReaderCallback
+                    }
+                    if (activeIdx >= queue.lastIndex) {
+                        return@ReaderCallback
+                    }
+                    removalWatchJob?.cancel()
+                    removalWatchJob = null
+                    val nextIdx = activeIdx + 1
+                    val nextTag = queue.getOrNull(nextIdx) ?: return@ReaderCallback
+                    val nextCachedUrl = urlCache[nextTag.id]
+                    if (nextCachedUrl.isNullOrEmpty()) {
+                        // Let LaunchedEffect load the URL and wait for next tap
+                        scope.launch(Dispatchers.Main) { currentIndex = nextIdx }
+                        return@ReaderCallback
+                    }
+                    targetIdx = nextIdx
+                    tagItem = nextTag
+                    url = nextCachedUrl
+                    scope.launch(Dispatchers.Main) {
+                        currentIndex = nextIdx
+                        preparedUrl = nextCachedUrl
+                    }
+                } else if (activePhase != ProgramPhase.WAITING && activePhase != ProgramPhase.ERROR) {
                     return@ReaderCallback
                 }
+
                 if (url.isEmpty()) return@ReaderCallback
 
                 isHandlingTag = true
-                val ignoreUidSnapshot = latestLastProgrammedUid
                 scope.launch {
                     try {
                         val result = withContext(Dispatchers.IO) {
                             NfcTagHardwareWriter.writeAndVerify(
                                 tag = nfcTag,
                                 expectedUrlRaw = url,
-                                ignoreUid = ignoreUidSnapshot,
+                                ignoreUid = prevUid,
                                 onStageChange = { stage ->
                                     scope.launch(Dispatchers.Main) {
                                         if (stage == "writing") phase = ProgramPhase.WRITING
@@ -240,6 +279,26 @@ fun NfcProgrammingDialog(
                                 AdminUtils.vibrateFeedback(context, success = true)
                                 latestOnTagVerified(tagItem)
                                 latestOnSendLog(tagItem.id, "success", result.logs)
+
+                                // Watch for physical tag removal and automatically advance to next tag (or close on last)
+                                val completedIdx = targetIdx
+                                val successShownAt = System.currentTimeMillis()
+                                removalWatchJob?.cancel()
+                                removalWatchJob = scope.launch {
+                                    val removed = withContext(Dispatchers.IO) {
+                                        NfcTagHardwareWriter.waitUntilTagRemoved(nfcTag)
+                                    }
+                                    if (!removed) return@launch
+                                    val elapsed = System.currentTimeMillis() - successShownAt
+                                    if (elapsed < 850L) delay(850L - elapsed)
+                                    if (latestPhase == ProgramPhase.SUCCESS && latestCurrentIndex == completedIdx) {
+                                        if (completedIdx < queue.lastIndex) {
+                                            currentIndex = completedIdx + 1
+                                        } else {
+                                            latestOnClose()
+                                        }
+                                    }
+                                }
                             }
 
                             is NfcWriteResult.Error -> {
@@ -263,6 +322,8 @@ fun NfcProgrammingDialog(
             }
         }
         onDispose {
+            removalWatchJob?.cancel()
+            removalWatchJob = null
             if (activity != null && nfcAdapter != null) {
                 runCatching { nfcAdapter.disableReaderMode(activity) }
             }
@@ -551,10 +612,35 @@ fun NfcProgrammingDialog(
                                     color = NfcColors.TextMuted,
                                 )
                             }
-                            Spacer(Modifier.height(8.dp))
+                            Spacer(Modifier.height(4.dp))
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(NfcColors.EmeraldBg, RoundedCornerShape(14.dp))
+                                    .border(1.dp, NfcColors.EmeraldBorder, RoundedCornerShape(14.dp))
+                                    .padding(12.dp),
+                            ) {
+                                Text(
+                                    text = if (currentIndex < queue.lastIndex) {
+                                        "Bác nhấc thẻ này ra để máy tự chuyển sang thẻ tiếp theo (${currentIndex + 2}/${queue.size}), hoặc áp thẳng thẻ mới vào."
+                                    } else {
+                                        "Bác nhấc thẻ này ra để hoàn tất."
+                                    },
+                                    fontSize = 14.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = NfcColors.EmeraldText,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                            Spacer(Modifier.height(4.dp))
                             if (currentIndex < queue.lastIndex) {
                                 SoftActionButton(
-                                    onClick = { currentIndex += 1 },
+                                    onClick = {
+                                        removalWatchJob?.cancel()
+                                        removalWatchJob = null
+                                        currentIndex += 1
+                                    },
                                     minHeightDp = 56,
                                     modifier = Modifier.fillMaxWidth(),
                                 ) {
@@ -566,7 +652,11 @@ fun NfcProgrammingDialog(
                                 }
                             } else {
                                 SoftActionButton(
-                                    onClick = onClose,
+                                    onClick = {
+                                        removalWatchJob?.cancel()
+                                        removalWatchJob = null
+                                        onClose()
+                                    },
                                     minHeightDp = 56,
                                     modifier = Modifier.fillMaxWidth(),
                                 ) {
