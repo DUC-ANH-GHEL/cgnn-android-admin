@@ -1,0 +1,3 @@
+-keepattributes *Annotation*, Signature, InnerClasses, EnclosingMethod
+-keep class vn.cgnn.admin.data.model.** { *; }
+-dontwarn kotlinx.serialization.**
