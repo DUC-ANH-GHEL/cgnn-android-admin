@@ -48,9 +48,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import vn.cgnn.admin.data.model.AdminNfcTag
@@ -860,24 +863,32 @@ private fun NfcTagCardItem(
                     .weight(1f)
                     .clickable(onClick = onOpen),
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(
-                        text = tag.codeLabel,
-                        fontSize = 19.sp,
-                        fontWeight = FontWeight.Black,
-                        color = NfcColors.TextDeep,
-                    )
-                    if (!tag.orderRecipientName.isNullOrBlank()) {
-                        Text(
-                            text = tag.orderRecipientName,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF475569),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
+                Text(
+                    text = buildAnnotatedString {
+                        withStyle(
+                            SpanStyle(
+                                fontSize = 19.sp,
+                                fontWeight = FontWeight.Black,
+                                color = NfcColors.TextDeep,
+                            ),
+                        ) {
+                            append(tag.codeLabel)
+                        }
+                        if (!tag.orderRecipientName.isNullOrBlank()) {
+                            append("  ")
+                            withStyle(
+                                SpanStyle(
+                                    fontSize = 16.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF475569),
+                                ),
+                            ) {
+                                append(tag.orderRecipientName)
+                            }
+                        }
+                    },
+                    lineHeight = 23.sp,
+                )
                 Row(
                     modifier = Modifier.padding(top = 3.dp),
                     verticalAlignment = Alignment.CenterVertically,
