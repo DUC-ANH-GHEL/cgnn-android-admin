@@ -157,11 +157,24 @@ fun OrderFilterSheet(
     }
 }
 
+const val STATUS_UPDATED_DATE_TODAY = "today"
+
 fun todayVietnamDateIso(): String =
     LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh")).toString()
 
 fun yesterdayVietnamDateIso(): String =
     LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh")).minusDays(1).toString()
+
+fun sanitizeStatusUpdatedDate(raw: String): String {
+    val trimmed = raw.trim()
+    if (trimmed == STATUS_UPDATED_DATE_TODAY) return STATUS_UPDATED_DATE_TODAY
+    return if (Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(trimmed)) trimmed else ""
+}
+
+fun resolveStatusUpdatedDate(value: String, todayIso: String = todayVietnamDateIso()): String {
+    val sanitized = sanitizeStatusUpdatedDate(value)
+    return if (sanitized == STATUS_UPDATED_DATE_TODAY) todayIso else sanitized
+}
 
 fun formatDateShortVi(iso: String): String = runCatching {
     LocalDate.parse(iso).format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))
@@ -174,15 +187,15 @@ fun StatusDateFilterSheet(
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
-    val today = remember { todayVietnamDateIso() }
-    val yesterday = remember { yesterdayVietnamDateIso() }
-    val presets = remember(today, yesterday) {
-        listOf(
-            "" to "Tất cả ngày",
-            today to "Hôm nay (${formatDateShortVi(today)})",
-            yesterday to "Hôm qua (${formatDateShortVi(yesterday)})",
-        )
-    }
+    val today = todayVietnamDateIso()
+    val yesterday = yesterdayVietnamDateIso()
+    val resolvedCurrent = resolveStatusUpdatedDate(current, today)
+    val isToday = current == STATUS_UPDATED_DATE_TODAY
+    val presets = listOf(
+        Triple("", "Tất cả ngày", current.isBlank()),
+        Triple(STATUS_UPDATED_DATE_TODAY, "Hôm nay (${formatDateShortVi(today)})", isToday || current == today),
+        Triple(yesterday, "Hôm qua (${formatDateShortVi(yesterday)})", current == yesterday),
+    )
 
     AdminSheetContainer(title = "Lọc theo ngày cập nhật trạng thái", onDismiss = onDismiss) {
         Text(
@@ -191,11 +204,11 @@ fun StatusDateFilterSheet(
             color = NfcColors.TextMuted,
             modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
         )
-        presets.forEachIndexed { idx, (value, label) ->
+        presets.forEachIndexed { idx, (value, label, selected) ->
             if (idx > 0) HorizontalDivider(color = NfcColors.CardDivider)
             SelectableOptionRow(
                 label = label,
-                selected = current == value,
+                selected = selected,
                 onClick = {
                     onSelect(value)
                     onDismiss()
@@ -208,7 +221,7 @@ fun StatusDateFilterSheet(
         Spacer(Modifier.height(8.dp))
         LineActionButton(
             onClick = {
-                val initDate = runCatching { LocalDate.parse(current) }
+                val initDate = runCatching { LocalDate.parse(resolvedCurrent) }
                     .getOrElse { LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh")) }
                 DatePickerDialog(
                     context,
@@ -225,7 +238,7 @@ fun StatusDateFilterSheet(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text(
-                text = if (current.isNotBlank()) "Ngày đang chọn: ${formatDateShortVi(current)}" else "Mở lịch chọn ngày...",
+                text = if (resolvedCurrent.isNotBlank()) "Ngày đang chọn: ${formatDateShortVi(resolvedCurrent)}" else "Mở lịch chọn ngày...",
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Bold,
             )

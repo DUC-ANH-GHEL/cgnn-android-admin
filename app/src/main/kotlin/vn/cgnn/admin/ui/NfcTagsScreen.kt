@@ -101,10 +101,12 @@ import vn.cgnn.admin.ui.components.OrderFilterSheet
 import vn.cgnn.admin.ui.components.SearchVectorIcon
 import vn.cgnn.admin.ui.components.SeparateAccountConfirmSheet
 import vn.cgnn.admin.ui.components.SingleInputActionSheet
+import vn.cgnn.admin.ui.components.STATUS_UPDATED_DATE_TODAY
 import vn.cgnn.admin.ui.components.StatusDateFilterSheet
 import vn.cgnn.admin.ui.components.StatusFilterSheet
 import vn.cgnn.admin.ui.components.ToolsSheet
 import vn.cgnn.admin.ui.components.formatDateShortVi
+import vn.cgnn.admin.ui.components.resolveStatusUpdatedDate
 import vn.cgnn.admin.ui.components.todayVietnamDateIso
 import vn.cgnn.admin.ui.components.yesterdayVietnamDateIso
 import vn.cgnn.admin.ui.theme.LineActionButton
@@ -259,13 +261,14 @@ private fun NfcTagsMainScreen(
         "without_order" -> "Chưa có đơn"
         else -> PancakeOrderStatuses.BY_CODE[state.orderStatus]?.label ?: "Đang lọc"
     }
-    val todayDateValue = remember { todayVietnamDateIso() }
-    val yesterdayDateValue = remember { yesterdayVietnamDateIso() }
+    val todayDateValue = todayVietnamDateIso()
+    val yesterdayDateValue = yesterdayVietnamDateIso()
+    val resolvedStatusUpdatedDate = resolveStatusUpdatedDate(state.statusUpdatedDate, todayDateValue)
     val statusDateFilterLabel = when {
         state.statusUpdatedDate.isBlank() -> "Tất cả ngày"
-        state.statusUpdatedDate == todayDateValue -> "Hôm nay"
-        state.statusUpdatedDate == yesterdayDateValue -> "Hôm qua"
-        else -> formatDateShortVi(state.statusUpdatedDate)
+        state.statusUpdatedDate == STATUS_UPDATED_DATE_TODAY || resolvedStatusUpdatedDate == todayDateValue -> "Hôm nay"
+        resolvedStatusUpdatedDate == yesterdayDateValue -> "Hôm qua"
+        else -> formatDateShortVi(resolvedStatusUpdatedDate)
     }
 
     val selectedProgrammable = remember(state.selectedTagIds, state.rows) {

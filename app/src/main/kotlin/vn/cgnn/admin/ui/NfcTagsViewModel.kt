@@ -30,6 +30,8 @@ import vn.cgnn.admin.data.model.NfcGuideCardData
 import vn.cgnn.admin.data.model.NfcGuideContent
 import vn.cgnn.admin.data.network.AdminSessionExpiredException
 import vn.cgnn.admin.data.storage.NfcListPrefs
+import vn.cgnn.admin.ui.components.resolveStatusUpdatedDate
+import vn.cgnn.admin.ui.components.sanitizeStatusUpdatedDate
 import vn.cgnn.admin.util.AdminUtils
 import vn.cgnn.admin.util.NfcGuideHtmlBuilder
 import java.time.LocalDate
@@ -96,7 +98,8 @@ data class NfcTagsUiState(
     val filtersIgnored: Boolean get() = searchActive && !searchScoped
     val effStatus: String get() = if (filtersIgnored) "" else status
     val effOrderStatus: String get() = if (filtersIgnored) "" else orderStatus
-    val effStatusUpdatedDate: String get() = if (filtersIgnored) "" else statusUpdatedDate
+    val effStatusUpdatedDate: String
+        get() = if (filtersIgnored) "" else resolveStatusUpdatedDate(statusUpdatedDate)
     val effAttnOnly: Boolean get() = if (filtersIgnored) false else attnOnly
     val hasActiveFilter: Boolean
         get() = status.isNotEmpty() || orderStatus.isNotEmpty() || statusUpdatedDate.isNotEmpty() || attnOnly || searchActive
@@ -144,7 +147,7 @@ class NfcTagsViewModel(application: Application) : AndroidViewModel(application)
                 search = savedPrefs.search,
                 status = savedPrefs.status,
                 orderStatus = savedPrefs.orderStatus,
-                statusUpdatedDate = savedPrefs.statusUpdatedDate,
+                statusUpdatedDate = sanitizeStatusUpdatedDate(savedPrefs.statusUpdatedDate),
                 selectedTagIds = savedPrefs.selectedTagIds,
                 deselectAfterProgramming = savedPrefs.deselectAfterProgramming,
                 deselectAfterPrinting = savedPrefs.deselectAfterPrinting,
@@ -324,7 +327,7 @@ class NfcTagsViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun updateStatusUpdatedDateFilter(dateIso: String) {
-        val clean = if (Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(dateIso.trim())) dateIso.trim() else ""
+        val clean = sanitizeStatusUpdatedDate(dateIso)
         _state.update { it.copy(statusUpdatedDate = clean) }
         persistListPrefs()
         loadTags(background = false)
