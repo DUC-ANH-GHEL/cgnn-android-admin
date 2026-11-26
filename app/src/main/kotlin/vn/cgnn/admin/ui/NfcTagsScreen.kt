@@ -101,8 +101,12 @@ import vn.cgnn.admin.ui.components.OrderFilterSheet
 import vn.cgnn.admin.ui.components.SearchVectorIcon
 import vn.cgnn.admin.ui.components.SeparateAccountConfirmSheet
 import vn.cgnn.admin.ui.components.SingleInputActionSheet
+import vn.cgnn.admin.ui.components.StatusDateFilterSheet
 import vn.cgnn.admin.ui.components.StatusFilterSheet
 import vn.cgnn.admin.ui.components.ToolsSheet
+import vn.cgnn.admin.ui.components.formatDateShortVi
+import vn.cgnn.admin.ui.components.todayVietnamDateIso
+import vn.cgnn.admin.ui.components.yesterdayVietnamDateIso
 import vn.cgnn.admin.ui.theme.LineActionButton
 import vn.cgnn.admin.ui.theme.NfcColors
 import vn.cgnn.admin.ui.theme.QuickCopyPill
@@ -205,12 +209,14 @@ private fun NfcTagsMainScreen(
 ) {
     var statusSheetOpen by remember { mutableStateOf(false) }
     var orderSheetOpen by remember { mutableStateOf(false) }
+    var dateSheetOpen by remember { mutableStateOf(false) }
     var toolsOpen by remember { mutableStateOf(false) }
     var createBatchOpen by remember { mutableStateOf(false) }
     var defaultsOpen by remember { mutableStateOf(false) }
     var buttonSettingsOpen by remember { mutableStateOf(false) }
     var guideEditorOpen by remember { mutableStateOf(false) }
     var moreSelectionActionsOpen by remember { mutableStateOf(false) }
+    var quickSelectCount by remember { mutableStateOf("") }
     var searchFocused by remember { mutableStateOf(false) }
     var searchBoundsInWindow by remember { mutableStateOf<Rect?>(null) }
     var rootOriginInWindow by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
@@ -252,6 +258,14 @@ private fun NfcTagsMainScreen(
         "" -> "Tất cả đơn"
         "without_order" -> "Chưa có đơn"
         else -> PancakeOrderStatuses.BY_CODE[state.orderStatus]?.label ?: "Đang lọc"
+    }
+    val todayDateValue = remember { todayVietnamDateIso() }
+    val yesterdayDateValue = remember { yesterdayVietnamDateIso() }
+    val statusDateFilterLabel = when {
+        state.statusUpdatedDate.isBlank() -> "Tất cả ngày"
+        state.statusUpdatedDate == todayDateValue -> "Hôm nay"
+        state.statusUpdatedDate == yesterdayDateValue -> "Hôm qua"
+        else -> formatDateShortVi(state.statusUpdatedDate)
     }
 
     val selectedProgrammable = remember(state.selectedTagIds, state.rows) {
@@ -451,7 +465,7 @@ private fun NfcTagsMainScreen(
                                     }
                                 }
                             }
-                            if (state.searchActive && (state.status.isNotEmpty() || state.orderStatus.isNotEmpty() || state.attnOnly)) {
+                            if (state.searchActive && (state.status.isNotEmpty() || state.orderStatus.isNotEmpty() || state.statusUpdatedDate.isNotEmpty() || state.attnOnly)) {
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -479,25 +493,34 @@ private fun NfcTagsMainScreen(
                         }
                     }
 
-                    // 2 Filter buttons
+                    // Filter buttons: Tình trạng thẻ + Đơn mua thẻ + Ngày đổi trạng thái (exact web layout)
                     item(key = "filters") {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                FilterButton(
+                                    label = "Tình trạng thẻ",
+                                    value = statusFilterLabel,
+                                    active = state.status.isNotEmpty(),
+                                    onClick = { statusSheetOpen = true },
+                                    modifier = Modifier.weight(1f),
+                                )
+                                FilterButton(
+                                    label = "Đơn mua thẻ",
+                                    value = orderFilterLabel,
+                                    active = state.orderStatus.isNotEmpty(),
+                                    onClick = { orderSheetOpen = true },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
                             FilterButton(
-                                label = "Tình trạng thẻ",
-                                value = statusFilterLabel,
-                                active = state.status.isNotEmpty(),
-                                onClick = { statusSheetOpen = true },
-                                modifier = Modifier.weight(1f),
-                            )
-                            FilterButton(
-                                label = "Đơn mua thẻ",
-                                value = orderFilterLabel,
-                                active = state.orderStatus.isNotEmpty(),
-                                onClick = { orderSheetOpen = true },
-                                modifier = Modifier.weight(1f),
+                                label = "Ngày đổi trạng thái",
+                                value = statusDateFilterLabel,
+                                active = state.statusUpdatedDate.isNotEmpty(),
+                                onClick = { dateSheetOpen = true },
+                                modifier = Modifier.fillMaxWidth(),
                             )
                         }
                     }
@@ -552,27 +575,111 @@ private fun NfcTagsMainScreen(
                         }
                     }
 
-                    // Select all visible
+                    // Select all visible + Quick select top N cards (exact web parity)
                     if (state.shownRows.isNotEmpty() && !state.loading) {
                         item(key = "select-all") {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { viewModel.toggleAllVisible() }
                                     .padding(vertical = 2.dp),
                                 verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
                             ) {
-                                Checkbox(
-                                    checked = state.allVisibleSelected,
-                                    onCheckedChange = { viewModel.toggleAllVisible() },
-                                    colors = CheckboxDefaults.colors(checkedColor = NfcColors.DarkBarStart),
-                                )
-                                Text(
-                                    text = if (state.allVisibleSelected) "Bỏ chọn hết" else "Chọn hết ${state.shownRows.size} thẻ đang hiện",
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = NfcColors.TextDeep,
-                                )
+                                Row(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable { viewModel.toggleAllVisible() },
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Checkbox(
+                                        checked = state.allVisibleSelected,
+                                        onCheckedChange = { viewModel.toggleAllVisible() },
+                                        colors = CheckboxDefaults.colors(checkedColor = NfcColors.DarkBarStart),
+                                    )
+                                    Text(
+                                        text = if (state.allVisibleSelected) "Bỏ chọn hết" else "Chọn hết ${state.shownRows.size} thẻ đang hiện",
+                                        fontSize = 15.5.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = NfcColors.TextDeep,
+                                    )
+                                }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(96.dp)
+                                            .height(42.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(Color.White)
+                                            .border(1.5.dp, Color(0xFFCBD5E1), RoundedCornerShape(12.dp))
+                                            .padding(horizontal = 8.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        if (quickSelectCount.isEmpty()) {
+                                            Text(
+                                                text = "Nhập số thẻ",
+                                                fontSize = 13.5.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = Color(0xFF8A99AB),
+                                                maxLines = 1,
+                                            )
+                                        }
+                                        BasicTextField(
+                                            value = quickSelectCount,
+                                            onValueChange = { quickSelectCount = it.filter { ch -> ch.isDigit() }.take(4) },
+                                            singleLine = true,
+                                            textStyle = TextStyle(
+                                                fontSize = 15.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = NfcColors.TextDeep,
+                                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                            ),
+                                            cursorBrush = SolidColor(NfcColors.TextDeep),
+                                            keyboardOptions = KeyboardOptions(
+                                                keyboardType = KeyboardType.Number,
+                                                imeAction = ImeAction.Done,
+                                            ),
+                                            keyboardActions = KeyboardActions(
+                                                onDone = {
+                                                    dismissSearchFocus()
+                                                    if (quickSelectCount.isNotBlank()) {
+                                                        viewModel.selectTopVisibleCards(quickSelectCount)
+                                                    }
+                                                },
+                                            ),
+                                            modifier = Modifier.fillMaxWidth(),
+                                        )
+                                    }
+                                    val canQuickSelect = quickSelectCount.isNotBlank()
+                                    Box(
+                                        modifier = Modifier
+                                            .height(42.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(
+                                                if (canQuickSelect) Color(0xFFFFFDF7) else Color(0xFFF1F5F9),
+                                            )
+                                            .border(
+                                                1.5.dp,
+                                                if (canQuickSelect) Color(0xFFD8C9A8) else Color(0xFFCBD5E1),
+                                                RoundedCornerShape(12.dp),
+                                            )
+                                            .clickable(enabled = canQuickSelect) {
+                                                dismissSearchFocus()
+                                                viewModel.selectTopVisibleCards(quickSelectCount)
+                                            }
+                                            .padding(horizontal = 13.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Text(
+                                            text = "Chọn",
+                                            fontSize = 14.5.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = if (canQuickSelect) NfcColors.TextPrimary else NfcColors.TextSubtle,
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -744,6 +851,14 @@ private fun NfcTagsMainScreen(
             current = state.orderStatus,
             onSelect = viewModel::updateOrderStatusFilter,
             onDismiss = { orderSheetOpen = false },
+        )
+    }
+
+    if (dateSheetOpen) {
+        StatusDateFilterSheet(
+            current = state.statusUpdatedDate,
+            onSelect = viewModel::updateStatusUpdatedDateFilter,
+            onDismiss = { dateSheetOpen = false },
         )
     }
 

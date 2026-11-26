@@ -1,5 +1,6 @@
 package vn.cgnn.admin.ui.components
 
+import android.app.DatePickerDialog
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -34,11 +35,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import vn.cgnn.admin.data.model.AdminNfcTag
 import vn.cgnn.admin.data.model.AppFeatures
 import vn.cgnn.admin.data.model.PancakeOrderStatuses
@@ -148,6 +153,91 @@ fun OrderFilterSheet(
                     onDismiss()
                 },
             )
+        }
+    }
+}
+
+fun todayVietnamDateIso(): String =
+    LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh")).toString()
+
+fun yesterdayVietnamDateIso(): String =
+    LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh")).minusDays(1).toString()
+
+fun formatDateShortVi(iso: String): String = runCatching {
+    LocalDate.parse(iso).format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))
+}.getOrDefault(iso)
+
+@Composable
+fun StatusDateFilterSheet(
+    current: String,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val today = remember { todayVietnamDateIso() }
+    val yesterday = remember { yesterdayVietnamDateIso() }
+    val presets = remember(today, yesterday) {
+        listOf(
+            "" to "Tất cả ngày",
+            today to "Hôm nay (${formatDateShortVi(today)})",
+            yesterday to "Hôm qua (${formatDateShortVi(yesterday)})",
+        )
+    }
+
+    AdminSheetContainer(title = "Lọc theo ngày cập nhật trạng thái", onDismiss = onDismiss) {
+        Text(
+            text = "Chọn ngày đơn mua thẻ được cập nhật trạng thái.",
+            fontSize = 15.sp,
+            color = NfcColors.TextMuted,
+            modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+        )
+        presets.forEachIndexed { idx, (value, label) ->
+            if (idx > 0) HorizontalDivider(color = NfcColors.CardDivider)
+            SelectableOptionRow(
+                label = label,
+                selected = current == value,
+                onClick = {
+                    onSelect(value)
+                    onDismiss()
+                },
+            )
+        }
+
+        Spacer(Modifier.height(14.dp))
+        Text("Hoặc chọn một ngày", fontSize = 14.sp, fontWeight = FontWeight.Black, color = NfcColors.TextDeep)
+        Spacer(Modifier.height(8.dp))
+        LineActionButton(
+            onClick = {
+                val initDate = runCatching { LocalDate.parse(current) }
+                    .getOrElse { LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh")) }
+                DatePickerDialog(
+                    context,
+                    { _, year, month, dayOfMonth ->
+                        val picked = LocalDate.of(year, month + 1, dayOfMonth).toString()
+                        onSelect(picked)
+                    },
+                    initDate.year,
+                    initDate.monthValue - 1,
+                    initDate.dayOfMonth,
+                ).show()
+            },
+            minHeightDp = 54,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                text = if (current.isNotBlank()) "Ngày đang chọn: ${formatDateShortVi(current)}" else "Mở lịch chọn ngày...",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+        SilverPrimaryButton(
+            onClick = onDismiss,
+            minHeightDp = 54,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Xem thẻ", fontSize = 16.5.sp, fontWeight = FontWeight.Black, color = NfcColors.SilverBtnText)
         }
     }
 }

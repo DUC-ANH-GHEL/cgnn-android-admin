@@ -29,6 +29,7 @@ data class NfcListPrefs(
     val search: String = "",
     val status: String = "",
     val orderStatus: String = "",
+    val statusUpdatedDate: String = "",
     val selectedTagIds: List<Long> = emptyList(),
     val deselectAfterProgramming: Boolean = true,
     val deselectAfterPrinting: Boolean = true,

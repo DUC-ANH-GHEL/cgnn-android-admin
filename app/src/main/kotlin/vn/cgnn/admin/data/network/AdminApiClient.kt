@@ -263,6 +263,7 @@ class AdminApiClient(
         search: String = "",
         status: String = "",
         orderStatus: String = "",
+        statusUpdatedDate: String = "",
         limit: Int = 100,
     ): List<AdminNfcTag> {
         val root = executeJson(
@@ -273,6 +274,7 @@ class AdminApiClient(
                 "q" to search.trim().ifBlank { null },
                 "status" to status.ifBlank { null },
                 "order_status" to orderStatus.ifBlank { null },
+                "status_updated_date" to statusUpdatedDate.ifBlank { null },
             ),
             noCache = true,
         )
@@ -406,6 +408,7 @@ class AdminApiClient(
         search: String = "",
         status: String = "",
         orderStatus: String = "",
+        statusUpdatedDate: String = "",
     ): ByteArray = executeRaw(
         method = "GET",
         path = "/admin/machine-care/nfc-tags/export",
@@ -413,6 +416,7 @@ class AdminApiClient(
             "q" to search.trim().ifBlank { null },
             "status" to status.ifBlank { null },
             "order_status" to orderStatus.ifBlank { null },
+            "status_updated_date" to statusUpdatedDate.ifBlank { null },
         ),
     )
 

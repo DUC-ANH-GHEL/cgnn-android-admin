@@ -73,6 +73,7 @@ data class NfcTagsUiState(
     val search: String = "",
     val status: String = "",
     val orderStatus: String = "",
+    val statusUpdatedDate: String = "",
     val attnOnly: Boolean = false,
     val searchScoped: Boolean = false,
 
@@ -95,8 +96,10 @@ data class NfcTagsUiState(
     val filtersIgnored: Boolean get() = searchActive && !searchScoped
     val effStatus: String get() = if (filtersIgnored) "" else status
     val effOrderStatus: String get() = if (filtersIgnored) "" else orderStatus
+    val effStatusUpdatedDate: String get() = if (filtersIgnored) "" else statusUpdatedDate
     val effAttnOnly: Boolean get() = if (filtersIgnored) false else attnOnly
-    val hasActiveFilter: Boolean get() = status.isNotEmpty() || orderStatus.isNotEmpty() || attnOnly || searchActive
+    val hasActiveFilter: Boolean
+        get() = status.isNotEmpty() || orderStatus.isNotEmpty() || statusUpdatedDate.isNotEmpty() || attnOnly || searchActive
 
     val attentionCount: Int get() = rows.count { it.needsAttention }
     val shownRows: List<AdminNfcTag> get() = if (effAttnOnly) rows.filter { it.needsAttention } else rows
@@ -141,6 +144,7 @@ class NfcTagsViewModel(application: Application) : AndroidViewModel(application)
                 search = savedPrefs.search,
                 status = savedPrefs.status,
                 orderStatus = savedPrefs.orderStatus,
+                statusUpdatedDate = savedPrefs.statusUpdatedDate,
                 selectedTagIds = savedPrefs.selectedTagIds,
                 deselectAfterProgramming = savedPrefs.deselectAfterProgramming,
                 deselectAfterPrinting = savedPrefs.deselectAfterPrinting,
@@ -234,6 +238,7 @@ class NfcTagsViewModel(application: Application) : AndroidViewModel(application)
                 search = s.search,
                 status = s.status,
                 orderStatus = s.orderStatus,
+                statusUpdatedDate = s.statusUpdatedDate,
                 selectedTagIds = s.selectedTagIds,
                 deselectAfterProgramming = s.deselectAfterProgramming,
                 deselectAfterPrinting = s.deselectAfterPrinting,
@@ -275,6 +280,7 @@ class NfcTagsViewModel(application: Application) : AndroidViewModel(application)
                     search = s.search.trim(),
                     status = s.effStatus,
                     orderStatus = s.effOrderStatus,
+                    statusUpdatedDate = s.effStatusUpdatedDate,
                     limit = 100,
                 )
                 nextRows.forEach { knownTags[it.id] = it }
@@ -317,12 +323,19 @@ class NfcTagsViewModel(application: Application) : AndroidViewModel(application)
         loadTags(background = false)
     }
 
+    fun updateStatusUpdatedDateFilter(dateIso: String) {
+        val clean = if (Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(dateIso.trim())) dateIso.trim() else ""
+        _state.update { it.copy(statusUpdatedDate = clean) }
+        persistListPrefs()
+        loadTags(background = false)
+    }
+
     fun toggleAttentionOnly() {
         _state.update { it.copy(attnOnly = !it.attnOnly) }
     }
 
     fun clearFilters() {
-        _state.update { it.copy(search = "", status = "", orderStatus = "", attnOnly = false) }
+        _state.update { it.copy(search = "", status = "", orderStatus = "", statusUpdatedDate = "", attnOnly = false) }
         persistListPrefs()
         loadTags(background = false)
     }
@@ -352,6 +365,27 @@ class NfcTagsViewModel(application: Application) : AndroidViewModel(application)
             s.copy(selectedTagIds = next)
         }
         persistListPrefs()
+    }
+
+    fun selectTopVisibleCards(countRaw: String) {
+        val requested = countRaw.trim().toIntOrNull()
+        if (requested == null || requested <= 0) {
+            emitToast("Nhập số thẻ lớn hơn 0.", isError = true)
+            return
+        }
+        val s = _state.value
+        val visibleIds = s.shownRows.map { it.id }
+        val takeCount = minOf(requested, visibleIds.size)
+        val clamped = requested >= visibleIds.size
+        val visibleSet = visibleIds.toSet()
+        val keptFromOtherFilters = s.selectedTagIds.filterNot { it in visibleSet }
+        val topIds = visibleIds.take(takeCount)
+        _state.update { it.copy(selectedTagIds = (keptFromOtherFilters + topIds).distinct()) }
+        persistListPrefs()
+        emitToast(
+            if (clamped) "Đã chọn hết $takeCount thẻ đang hiện." else "Đã chọn $takeCount thẻ đầu tiên.",
+            isError = false,
+        )
     }
 
     fun clearSelection() {
@@ -741,7 +775,7 @@ class NfcTagsViewModel(application: Application) : AndroidViewModel(application)
                 val bytes = if (s.selectedTagIds.isNotEmpty()) {
                     api.exportSelectedNfcTagsCsv(s.selectedTagIds)
                 } else {
-                    api.exportNfcTagsCsv(s.search, s.effStatus, s.effOrderStatus)
+                    api.exportNfcTagsCsv(s.search, s.effStatus, s.effOrderStatus, s.effStatusUpdatedDate)
                 }
                 _effects.tryEmit(
                     UiEffect.ShareFile(
